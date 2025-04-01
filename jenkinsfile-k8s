@@ -1,0 +1,109 @@
+pipeline {
+    agent any
+    
+    tools{
+        maven 'maven3'
+    }
+    
+    environment {
+        SCANNER_HOME= tool 'sonar-scanner'
+    }
+
+    stages {
+        stage('Git Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/subrotosharma/Bank-Application-Multi-Tier-CICD-Project.git'
+            }
+        }
+        
+        stage('Compile') {
+            steps {
+                sh 'mvn compile'
+            }
+        }
+        
+        stage('Test') {
+            steps {
+                sh 'mvn test -DskipTests=true'
+            }
+        }
+        
+        stage('Trivy FS Scan') {
+            steps {
+                sh 'trivy fs --format table -o fs-report.html .'
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                   sh "$SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Bank-App -Dsonar.projectKey=Bank-App -Dsonar.java.binaries=target"
+                }
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                sh 'mvn package -DskipTests=true'
+            }
+        }
+        
+        stage('Publish To Nexus') {
+            steps {
+                withMaven(globalMavenSettingsConfig: 'settings-maven', jdk: '', maven: 'maven3', mavenSettingsConfig: '', traceability: true) {
+                    sh "mvn deploy -DskipTests=true"
+                 }
+            }
+        }
+        
+        stage('Docker Build Image') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                         sh " docker build -t subrotosharma/bankapp:latest ."
+                    }
+                }
+            }
+        }
+        
+        stage('Trivy Image Scan') {
+            steps {
+                sh 'trivy image --format table -o fs-report.html subrotosharma/bankapp:latest'
+            }
+        }
+        
+        stage('Docker Push Image') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                         sh " docker push subrotosharma/bankapp:latest"
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to K8s') {
+            steps {
+                script {
+                    withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: 'devopssubroto-cluster', contextName: '', credentialsId: 'k8s-token', namespace: 'webapps', serverUrl: 'https://C5B249329F96B229EABDDE024B9F0B96.gr7.us-east-1.eks.amazonaws.com']]) {
+                       sh "kubectl apply -f ds.yml -n webapps"
+                       sleep 30
+                    }
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: 'devopssubroto-cluster', contextName: '', credentialsId: 'k8s-token', namespace: 'webapps', serverUrl: 'https://C5B249329F96B229EABDDE024B9F0B96.gr7.us-east-1.eks.amazonaws.com']]) {
+                       sh "kubectl get pods -n webapps"
+                       sh "kubectl get svc -n webapps"
+                    }
+                }
+            }
+        }
+        
+        
+    }
+}
